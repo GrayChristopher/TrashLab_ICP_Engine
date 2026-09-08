@@ -4,6 +4,8 @@ A lightweight, reproducible pipeline for discovering, qualifying, enriching, and
 
 The prototype prioritizes **traceability and accuracy over artificial completeness**. Unknown data is intentionally left unknown rather than inferred or fabricated.
 
+The exercise was also built within a practical constraint: **no additional paid data or enrichment budget**. Public sources and free/trial API capacity were used to demonstrate the system. The architecture is intentionally modular so those sources can be replaced with licensed production providers without rebuilding the pipeline.
+
 ## Pipeline
 
 ```text
@@ -19,7 +21,9 @@ Qualification + normalization
         ↓
 02_enrich.py
         ↓
-Public / first-party enrichment
+Public data + free/trial search APIs
+        ↓
+Website validation + first-party enrichment
         ↓
 03_score.py
         ↓
@@ -66,6 +70,8 @@ Municipal permit, franchise, and approved-hauler lists provide a useful high-sig
 
 They are not treated as perfect or complete. The pipeline preserves source provenance so records can be validated downstream.
 
+They also fit the constraint of this prototype: they are publicly available and do not require purchasing a commercial dataset before proving the underlying discovery model.
+
 ## 2. Qualification and Enrichment
 
 The qualification layer separates likely operating waste haulers from obvious non-ICP records.
@@ -94,29 +100,36 @@ Fields include:
 - estimated size signal
 - source / evidence URLs
 
-Website resolution can optionally use:
+### Enrichment approach and prototype constraints
 
-1. existing municipal/source websites
-2. SerpApi search
-3. You.com search as a fallback
+This take-home was built without purchasing additional enrichment data or API capacity.
 
-Candidate domains are validated before being accepted, and known government, directory, social, and third-party domains are excluded.
+The goal was therefore to build the best reproducible enrichment workflow possible within a **free-data / free-API guardrail**, rather than assume access to a production enrichment budget.
 
-Once a company website is accepted, the pipeline searches public pages for:
+The enrichment sequence is:
 
-- business phone
-- business email
-- service-line evidence
-- fleet / employee size signals
-- supporting evidence URLs
+1. preserve websites and contact data already supplied by municipal sources
+2. use SerpApi to search for unresolved company domains
+3. use You.com as a secondary search source for remaining gaps
+4. validate candidate domains against company-name and location evidence
+5. reject known government, directory, social, and third-party domains
+6. crawl accepted company websites for public phone, email, service-line, and size evidence
 
-API credentials are optional and are read from environment variables. Without them, the enrichment script still runs using available source data and known websites.
+SerpApi and You.com were selected because free/trial API capacity was available for the prototype. They were useful for demonstrating automated domain resolution without requiring the purchase of an enrichment dataset or subscription.
+
+They should not be interpreted as a recommendation for the final production enrichment stack.
+
+With a production budget, I would benchmark licensed company and contact enrichment providers against this public-data baseline and select the provider mix based on verified coverage, accuracy, false-positive rate, and cost.
+
+The important architectural point is that the **provider layer is replaceable**. Discovery, validation, normalization, evidence collection, and scoring do not need to be redesigned when a better enrichment provider is introduced.
 
 ### Data quality principle
 
 Missing enrichment is treated as **unknown**, not as evidence that a company is a poor ICP.
 
 This distinction matters because smaller independent haulers often have limited public web presence even when they may be strong operational fits.
+
+The system therefore separates ICP fit from evidence confidence instead of artificially penalizing companies simply because public enrichment is incomplete.
 
 ## 3. ICP Scoring
 
@@ -199,12 +212,14 @@ The enrichment layer can also be tested without making search API calls:
 python 02_enrich.py --self-test
 ```
 
-Optional search API credentials:
+Search API credentials are optional:
 
 ```bash
 export SERPAPI_KEY="your_key"
 export YOU_API_KEY="your_key"
 ```
+
+If credentials are not supplied, the enrichment script still runs using available source data and known company websites.
 
 Credentials are not stored in the repository.
 
@@ -212,7 +227,7 @@ Credentials are not stored in the repository.
 
 I would scale the **framework, not the Texas file**.
 
-Texas validates the ingestion and scoring model. National expansion would separate reusable parsing, normalization, enrichment, and scoring logic from individual source configurations.
+Texas validates the ingestion, qualification, enrichment, validation, and scoring model. National expansion would separate reusable pipeline logic from individual source configurations.
 
 I would prioritize discovery sources in this order:
 
@@ -224,32 +239,49 @@ I would prioritize discovery sources in this order:
 
 The unit of scale becomes **source coverage**, rather than manually finding individual companies.
 
-### Cost per 1,000
+For example, rather than attempting to discover thousands of haulers individually, I would build a source registry identifying the highest-value state and municipal datasets, automate ingestion for those sources, and route all records through the same normalization, validation, deduplication, enrichment, and scoring layers demonstrated here.
 
-This prototype relies primarily on public municipal data and used free/trial search API capacity for domain resolution.
+## Cost per 1,000
 
-At production scale, I would benchmark licensed enrichment/search providers based on:
+The prototype was intentionally built within a **free-data / free-API guardrail**.
 
+Discovery uses public municipal and regulatory sources at no data-acquisition cost.
+
+Website resolution used free/trial API capacity from SerpApi and You.com. No commercial enrichment dataset or additional paid enrichment subscription was purchased for the exercise.
+
+As a result, the direct incremental data cost of the prototype was effectively **$0**, excluding development time and normal compute/network usage.
+
+I would **not extrapolate a $0 cost per 1,000 records to a production national system**.
+
+For U.S. and Canada scale, I would run a representative batch through candidate licensed enrichment providers and measure:
+
+- cost per 1,000 attempted records
+- cost per verified record
 - verified-domain match rate
 - contact fill rate
 - false-positive rate
-- API cost
 - refresh cost
 
-Rather than assume a theoretical cost per 1,000, I would measure it after a representative production batch and optimize the provider mix against verified-record yield.
+The production decision would be based primarily on **cost per usable verified record**, rather than simply cost per API call.
 
-### Refresh cadence
+For example, a more expensive provider that produces materially higher verified-domain and contact coverage may have a lower effective acquisition cost than a cheaper search API requiring substantial downstream validation.
 
-I would use different refresh schedules by data type:
+The prototype demonstrates where that provider plugs into the system and provides a public-data baseline against which paid providers can be evaluated.
+
+## Refresh Cadence
+
+Different data types should refresh at different frequencies:
 
 - municipal / regulatory sources: monthly or quarterly
 - company websites and service lines: quarterly
 - contact data: monthly or provider-dependent
 - full ICP rescoring: after each material enrichment refresh
 
-Source-level change detection would allow unchanged datasets to be skipped.
+Source-level change detection would allow unchanged municipal datasets to be skipped rather than repeatedly processing identical records.
 
-### Expected failure modes
+At production scale I would also track source freshness and parser health so a changed municipal page or PDF format generates an alert instead of silently degrading coverage.
+
+## Expected Failure Modes
 
 The main production risks are:
 
@@ -262,10 +294,28 @@ The main production risks are:
 - false-positive domain resolution
 - missing fleet / employee data
 - service lines that are not explicitly described online
+- free/trial API limits that are unsuitable for production volume
 
 The prototype addresses these by preserving provenance, validating sources independently, applying domain guardrails, keeping evidence URLs, and treating missing information as unknown.
 
-At production scale I would add stronger entity resolution, automated domain verification, source freshness monitoring, licensed enrichment, and QA sampling.
+The search API stage is intentionally treated as a **candidate-generation mechanism**, not unquestioned ground truth. Candidate websites are validated before being used as enrichment evidence.
+
+At production scale I would add stronger entity resolution, automated domain verification, source freshness monitoring, licensed enrichment, and ongoing QA sampling.
+
+## Production Improvements
+
+With production access and budget, the next improvements would be:
+
+1. replace or supplement free search APIs with licensed enrichment providers
+2. expand the municipal and regulatory source registry nationally
+3. strengthen entity resolution across company names, DBAs, locations, and parent companies
+4. add automated source freshness and parser-health monitoring
+5. improve fleet and employee-size enrichment
+6. add contact-level enrichment for relevant operational and executive personas
+7. measure enrichment providers against verified-record yield and cost
+8. schedule recurring refresh and automatic ICP rescoring
+
+The prototype is therefore not dependent on SerpApi or You.com. Those providers were appropriate tools for the constraints of this exercise; the provider layer can be upgraded independently.
 
 ## Design Principle
 
@@ -277,6 +327,6 @@ Discover → Qualify → Enrich → Validate → Score
 
 Each layer can be replaced or scaled independently.
 
-The goal of the prototype is not to claim that public web data can produce a perfectly enriched national hauler database.
+The goal of the prototype is not to claim that free public web data can produce a perfectly enriched national hauler database.
 
-It is to demonstrate a reproducible system for turning fragmented vertical data into a traceable, ranked ICP dataset that can be expanded with better sources and enrichment providers over time.
+It is to demonstrate a reproducible system for turning fragmented vertical data into a traceable, ranked ICP dataset — **using the resources available within the exercise's constraints** — and to show a clear path for scaling that system with better data sources and enrichment providers in production.
