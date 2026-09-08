@@ -2,12 +2,12 @@
 
 A lightweight, reproducible pipeline for discovering, qualifying, enriching, and ranking Texas waste haulers against a TrashLab-style ICP.
 
-The prototype prioritizes **accuracy and traceability over artificial data completeness**. When a field cannot be verified from the available public data, it remains unknown rather than being inferred or fabricated.
+The prototype prioritizes **traceability and accuracy over artificial completeness**. Unknown data is intentionally left unknown rather than inferred or fabricated.
 
 ## Pipeline
 
 ```text
-Public municipal sources
+Public municipal hauler sources
         ↓
 01_discover.py
         ↓
@@ -23,53 +23,66 @@ Public / first-party enrichment
         ↓
 03_score.py
         ↓
-209 eligible candidates
+ICP scoring + eligibility guardrail
         ↓
-Top 150 ranked ICP accounts
+Top 150 ranked Texas haulers
 ```
 
 ## 1. Discovery
 
-`01_discover.py`
+`01_discover.py` builds the candidate universe from public municipal and regulatory hauler sources across Texas.
 
-Discovers Texas waste-hauler candidates from 10 public municipal and regulatory sources, including approved-hauler, franchise, recycling-hauler, and permit lists.
+The current prototype uses 10 source configurations spanning markets including:
+
+- Garland
+- Weatherford
+- Austin
+- College Station
+- Mesquite
+- Plano
+- Denton
+- New Braunfels
+- Houston
+
+Plano includes separate general and C&D hauler sources.
 
 The discovery layer:
 
-- ingests HTML and PDF sources
+- retrieves HTML and PDF sources
 - validates each source independently
-- normalizes company names and fields
-- deduplicates companies across sources
-- preserves source URLs for traceability
-- creates a candidate universe for downstream qualification
+- parses company records
+- normalizes company names
+- deduplicates records across sources
+- preserves source URLs and market provenance
+- flags source failures rather than silently dropping them
 
-Current output: **469 unique candidate companies**
+Current discovery output:
+
+**469 unique candidate companies**
 
 ### Why municipal data?
 
-Municipal hauler and franchise lists provide a useful high-intent starting point because inclusion often demonstrates that a company is actively permitted, approved, or recognized as a waste operator in a specific market.
+Municipal permit, franchise, and approved-hauler lists provide a useful high-signal starting point because inclusion often indicates an actual operating relationship with a local waste market.
 
-No single source provides complete statewide coverage, so the system combines multiple sources.
+They are not treated as perfect or complete. The pipeline preserves source provenance so records can be validated downstream.
 
-## 2. Qualification & Enrichment
+## 2. Qualification and Enrichment
 
-`02_enrich.py`
+The qualification layer separates likely operating waste haulers from obvious non-ICP records.
 
-The second stage filters the discovery universe for companies relevant to TrashLab and enriches records using available public and first-party data.
-
-The current ICP includes operators providing services such as:
+Relevant operations include:
 
 - roll-off
-- residential waste
-- commercial waste
+- residential collection
+- commercial collection
 - recycling
 - portable toilet
 - septic
-- related mixed hauling operations
+- mixed waste operations
 
-Clearly unrelated businesses are excluded where the available evidence supports that decision.
+The enrichment layer preserves existing municipal data first, then attempts to resolve and crawl company websites for additional public evidence.
 
-The enrichment layer attempts to populate:
+Fields include:
 
 - company
 - location
@@ -78,94 +91,78 @@ The enrichment layer attempts to populate:
 - website
 - service lines
 - adjacent service lines
-- operational size signals
-- supporting evidence
+- estimated size signal
+- source / evidence URLs
 
-Current prototype:
+Website resolution can optionally use:
 
-- **210 qualified candidates**
-- 149 with phone data
-- 39 with verified/known websites
-- 32 with structured service-line enrichment
-- 17 with email data
-- 5 with explicit public size signals
+1. existing municipal/source websites
+2. SerpApi search
+3. You.com search as a fallback
 
-### Unknown values
+Candidate domains are validated before being accepted, and known government, directory, social, and third-party domains are excluded.
 
-Missing data is intentionally left unknown.
+Once a company website is accepted, the pipeline searches public pages for:
 
-The prototype does not interpret an unavailable email, website, or fleet count as evidence that the company lacks one.
+- business phone
+- business email
+- service-line evidence
+- fleet / employee size signals
+- supporting evidence URLs
 
-This separates:
+API credentials are optional and are read from environment variables. Without them, the enrichment script still runs using available source data and known websites.
 
-1. **ICP fit**
-2. **data availability**
-3. **data confidence**
+### Data quality principle
 
-In production, I would connect this enrichment layer to a licensed provider or enrichment workflow to increase fill rates while preserving the same validation, normalization, and evidence model.
+Missing enrichment is treated as **unknown**, not as evidence that a company is a poor ICP.
+
+This distinction matters because smaller independent haulers often have limited public web presence even when they may be strong operational fits.
 
 ## 3. ICP Scoring
 
-`03_score.py`
+`03_score.py` applies a transparent 100-point scoring model.
 
-Qualified candidates are ranked using a transparent 100-point model.
-
-| Dimension | Weight |
-|---|---:|
+| Dimension | Points |
+| --- | ---: |
 | Service fit | 40 |
-| Multi-line operational complexity | 20 |
+| Multi-line complexity | 20 |
 | Operational scale | 20 |
 | Data confidence / contactability | 20 |
 | **Total** | **100** |
 
-### Service Fit — 40 points
+### Service fit
 
-Rewards verified evidence of TrashLab-relevant waste operations.
+Rewards evidence of TrashLab-relevant operations such as roll-off, residential, commercial, and recycling.
 
-Companies with multiple verified core service lines receive the strongest score.
+### Multi-line complexity
 
-### Multi-Line Complexity — 20 points
+Rewards operators serving multiple service lines, where dispatch, routing, billing, and operational complexity are likely higher.
 
-Rewards operators managing multiple service types.
+### Operational scale
 
-The hypothesis is that operational complexity increases the potential value of a vertical operating platform.
+Uses available fleet, truck, employee, or similar operating-size evidence.
 
-### Operational Scale — 20 points
+Missing size information is not automatically interpreted as a small company.
 
-Uses explicit public signals when available, including:
+### Data confidence
 
-- fleet/truck counts
-- employees
-- customers
-- locations
-- other quantifiable operational indicators
+Measures how much verifiable information is available for the record, including website, phone, email, service evidence, and supporting sources.
 
-Missing scale data is treated as **unknown**, not as evidence that the company is small.
+This allows the model to distinguish:
 
-### Data Confidence / Contactability — 20 points
+**lower ICP fit** from **lower evidence confidence**.
 
-Rewards records supported by stronger evidence, including:
+## Eligibility Guardrail
 
-- multiple discovery sources
-- municipal source URLs
-- verified website
-- phone
-- email
-- first-party web evidence
+Before final ranking, the scoring layer removes obvious parser artifacts and clearly non-core specialty records that lack evidence of relevant hauling operations.
 
-An additional evidence-coverage tier distinguishes ICP score from enrichment completeness.
+Portable toilet and septic operators are retained because they are relevant to TrashLab's supported operating model.
 
-### Eligibility Guardrail
+The final output contains:
 
-Before final ranking, deterministic guardrails remove obvious parser artifacts and clearly non-core specialty operators.
+**150 ranked Texas hauler ICP records**
 
-Adjacent TrashLab-relevant businesses such as portable-toilet and septic operators are retained.
-
-Current result:
-
-- **210 candidates scored**
-- **209 eligible after guardrails**
-- **150 final ranked ICP accounts**
+Each record includes its total ICP score, component scores, evidence tier, and source evidence.
 
 ## Running the Pipeline
 
@@ -184,109 +181,102 @@ python 01_discover.py
 Run enrichment:
 
 ```bash
-python 02_enrich.py
+python 02_enrich.py \
+  --input data/qualified_candidates.csv \
+  --output data/enriched_candidates.csv
 ```
 
 Run scoring:
 
 ```bash
-python 03_score.py
+python 03_score.py \
+  --input data/enriched_candidates.csv
 ```
 
-Each script includes a self-test:
+The enrichment layer can also be tested without making search API calls:
 
 ```bash
-python 01_discover.py --self-test
 python 02_enrich.py --self-test
-python 03_score.py --self-test
 ```
+
+Optional search API credentials:
+
+```bash
+export SERPAPI_KEY="your_key"
+export YOU_API_KEY="your_key"
+```
+
+Credentials are not stored in the repository.
 
 ## Scaling to the U.S. and Canada
 
-I would scale the **framework rather than the Texas file**.
+I would scale the **framework, not the Texas file**.
 
-The production discovery hierarchy would be:
+Texas validates the ingestion and scoring model. National expansion would separate reusable parsing, normalization, enrichment, and scoring logic from individual source configurations.
 
-```text
-State / provincial datasets
-        ↓
-Municipal permit & franchise lists
-        ↓
-Industry associations / directories
-        ↓
-Web discovery for coverage gaps
-        ↓
-Licensed enrichment
-        ↓
-Validation + normalization + deduplication
-        ↓
-ICP scoring
-```
+I would prioritize discovery sources in this order:
 
-The unit of scale is therefore **source coverage**, not a manually maintained list of companies.
+1. statewide regulatory / licensing datasets where available
+2. municipal permit, franchise, and approved-hauler lists
+3. industry associations and structured directories
+4. targeted web discovery to fill geographic gaps
+5. licensed enrichment providers for company and contact verification
 
-### Refresh Cadence
-
-I would use different refresh schedules by layer:
-
-- discovery sources: monthly or quarterly depending on source update frequency
-- contact/enrichment data: monthly
-- high-value ICP accounts: more frequent verification where justified
-- stale or failed sources: automatically flagged for review
+The unit of scale becomes **source coverage**, rather than manually finding individual companies.
 
 ### Cost per 1,000
 
-This prototype intentionally uses public sources and free first-party web data, so direct acquisition cost is effectively negligible outside compute/time.
+This prototype relies primarily on public municipal data and used free/trial search API capacity for domain resolution.
 
-For production, I would benchmark enrichment vendors against match rate, accuracy, and coverage before committing to a cost-per-1,000 assumption.
+At production scale, I would benchmark licensed enrichment/search providers based on:
 
-The production cost model would be:
+- verified-domain match rate
+- contact fill rate
+- false-positive rate
+- API cost
+- refresh cost
 
-```text
-public discovery cost
-+ enrichment cost
-+ verification cost
----------------------
-verified records produced
-```
+Rather than assume a theoretical cost per 1,000, I would measure it after a representative production batch and optimize the provider mix against verified-record yield.
 
-I would report the measured cost per 1,000 verified records rather than inventing a vendor cost before selecting the production stack.
+### Refresh cadence
 
-## Expected Failure Modes
+I would use different refresh schedules by data type:
 
-The system is designed around several predictable data-quality problems:
+- municipal / regulatory sources: monthly or quarterly
+- company websites and service lines: quarterly
+- contact data: monthly or provider-dependent
+- full ICP rescoring: after each material enrichment refresh
 
-- municipal source schema changes
-- stale municipal/franchise lists
-- inaccessible or anti-bot websites
-- duplicate DBA and legal entity names
-- franchise/location duplication
-- missing websites or emails
-- ambiguous service descriptions
-- uncertain fleet/employee counts
-- similarly named companies
-- PDF extraction changes
-- companies operating across multiple municipalities
+Source-level change detection would allow unchanged datasets to be skipped.
 
-The pipeline preserves source and evidence fields so questionable records can be reviewed instead of silently accepted.
+### Expected failure modes
 
-## Production Improvements
+The main production risks are:
 
-With additional time and production tooling, the next improvements would be:
+- stale municipal permit lists
+- municipal page or PDF format changes
+- duplicate companies operating under multiple names
+- acquisitions and brand changes
+- weak company web presence
+- search engines returning directories or unrelated companies
+- false-positive domain resolution
+- missing fleet / employee data
+- service lines that are not explicitly described online
 
-1. Add licensed domain/contact enrichment to increase website and email coverage.
-2. Add FMCSA/DOT or equivalent fleet evidence where entity matching is sufficiently confident.
-3. Expand discovery beyond Texas using configurable state/province source definitions.
-4. Add automated source-health monitoring and schema-change alerts.
-5. Add confidence thresholds and review queues for ambiguous entity matches.
-6. Persist historical snapshots to detect operator additions, removals, and material changes.
+The prototype addresses these by preserving provenance, validating sources independently, applying domain guardrails, keeping evidence URLs, and treating missing information as unknown.
+
+At production scale I would add stronger entity resolution, automated domain verification, source freshness monitoring, licensed enrichment, and QA sampling.
 
 ## Design Principle
 
-The goal of this prototype is not to manufacture a perfectly complete spreadsheet.
+The system is intentionally modular:
 
-It is to demonstrate a system that can repeatedly:
+```text
+Discover → Qualify → Enrich → Validate → Score
+```
 
-**discover → qualify → enrich → validate → score**
+Each layer can be replaced or scaled independently.
 
-a fragmented vertical market while preserving enough evidence to understand where every record came from and where additional production-grade enrichment would add value.
+The goal of the prototype is not to claim that public web data can produce a perfectly enriched national hauler database.
+
+It is to demonstrate a reproducible system for turning fragmented vertical data into a traceable, ranked ICP dataset that can be expanded with better sources and enrichment providers over time.
